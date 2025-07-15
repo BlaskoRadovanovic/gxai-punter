@@ -1,46 +1,43 @@
 # ==============================================================================
-#                 GXAI "Quantum Edge" v1.0 - Finalna Verzija
+#                 GXAI "Hermes" v1.0 - Autonomni Agent
 # ==============================================================================
 import os
 import requests
 import json
 import time
-import math  # Uvoz MATH biblioteke
+import math
+import numpy as np
+from scipy.optimize import minimize
 from groq import Groq
 
 # --- 1. KONFIGURACIJA I INICIJALIZACIJA ---
 def setup_clients_and_config():
     """Učitava konfiguraciju iz okruženja."""
-    config = {
+    return {
         "odds_api_key": os.environ.get('ODDS_API_KEY'),
         "groq_api_key": os.environ.get('GROQ_API_KEY'),
-        "value_threshold": 0.15,
+        "value_threshold": 0.10, # Smanjujemo prag da dobijemo više kandidata
         "sport_key": 'soccer_epl',
         "markets": 'h2h',
         "regions": 'eu',
-        "base_power_score": 100
+        "base_power_score": 100,
+        "bankroll": 1000, # Fiktivni bankroll od 1000€
+        "max_kelly_fraction": 0.1 # Maksimalno ulažemo 10% bankrolla odjednom
     }
-    
-    # Inicijalizacija Groq klijenta
-    groq_client = Groq(api_key=config["groq_api_key"]) if config["groq_api_key"] else None
-    
-    return config, groq_client
+
+def print_header(title):
+    print("\n" + "═"*60)
+    print(f"  {title.upper()}")
+    print("═"*60)
 
 # --- 2. MODUL ZA PRIKUPLJANJE PODATAKA ---
 def get_live_odds(config):
-    """Povlači najnovije kvote sa The Odds API."""
-    if not config["odds_api_key"]:
-        print("GREŠKA: ODDS_API_KEY nije postavljen.")
+    if not config["odds_api_key"]: 
+        print("GREŠKA: ODDS_API_KEY nije podešen.")
         return []
-    
     url = f"https://api.the-odds-api.com/v4/sports/{config['sport_key']}/odds/"
-    params = {
-        "apiKey": config["odds_api_key"],
-        "regions": config["regions"],
-        "markets": config["markets"]
-    }
-
-    print("INFO: Povlačim podatke o kvotama sa The Odds API...")
+    params = {"apiKey": config["odds_api_key"], "regions": config["regions"], "markets": config["markets"]}
+    print("INFO: Povlačim podatke o kvotama...")
     try:
         response = requests.get(url, params=params, timeout=15)
         response.raise_for_status()
@@ -51,131 +48,144 @@ def get_live_odds(config):
         return []
 
 def get_latest_news_simulation():
-    """Simulira sakupljanje najnovijih vesti."""
     print("\n📰 Sakupljam najnovije vesti (simulacija)...")
     return [
-        "Potvrđeno: Kapiten Man. Utd-a, Bruno Fernandes, propušta derbi zbog suspenzije.",
-        "Procurila je informacija o žestokoj svađi između dva starija igrača Liverpoola u svlačionici.",
-        "Marketing odeljenje Arsenala je objavilo sponzorski ugovor." # Nebitna vest
+        {"text": "Potvrđeno: Kapiten Man. Utd-a, Bruno Fernandes, propušta derbi.", "team": "Manchester United", "impact": -15},
+        {"text": "Neverovatna atmosfera ispred hotela Liverpoola, navijači pevaju.", "team": "Liverpool", "impact": 10},
+        {"text": "Trener Arsenala, Arteta, odmara ključne igrače pred evropsku utakmicu.", "team": "Arsenal", "impact": -8}
     ]
 
 # --- 3. MODUL ZA AI ANALIZU ---
-def analyze_news_with_llm(news_text, groq_client):
-    """Šalje vest LLM-u na analizu."""
-    if not groq_client:
-        print("UPOZORENJE: GROQ_API_KEY nije podešen. Preskačem LLM analizu.")
-        return None
-        
-    system_prompt = "Ti si sportski analitičar. Pročitaj vest i prevedi je u JSON. Fokusiraj se samo na informacije koje utiču na snagu tima. JSON struktura mora imati polja: 'is_relevant' (boolean), 'team' (string, tačno ime tima), 'summary' (string, kratka analiza), 'impact_score' (integer od -25 do +25)."
-    
-    print(f"🤖 Šaljem LLM-u na analizu: '{news_text[:60]}...'")
-    try:
-        response = groq_client.chat.completions.create(
-            model="llama3-8b-8192",
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": news_text}
-            ]
-        )
-        return json.loads(response.choices[0].message.content)
-    except Exception as e:
-        print(f"GREŠKA pri komunikaciji sa Groq API-jem: {e}")
-        return None
+def analyze_news_with_llm(news_item, groq_client):
+    """Simulira povratnu vrednost od LLM-a radi brzine i konzistentnosti testa."""
+    print(f"🤖 Analiziram: '{news_item['text'][:30]}...' -> Impact: {news_item['impact']}")
+    # U pravoj verziji, ovde bi bio poziv Groq API-ju
+    return news_item
 
 # --- 4. GLAVNI GXAI MOTOR ---
-def run_full_analysis():
-    """Glavna funkcija koja orkestrira ceo proces."""
-    config, groq_client = setup_clients_and_config()
-    
-    print_header("1. INICIJALIZACIJA I SAKUPLJANJE PODATAKA")
-    live_matches = get_live_odds(config)
-    if not live_matches:
-        print("Nema mečeva za analizu. Izlazim.")
-        return
-
-    all_teams = {team for match in live_matches for team in [match['home_team'], match['away_team']]}
+def calculate_power_scores(config, all_teams, news_items, groq_client):
     power_scores = {team: config["base_power_score"] for team in all_teams}
-    print(f"Pratim {len(all_teams)} timova u ligi.")
-    
-    print_header("2. ANALIZA VESTI I AŽURIRANJE POWER SCORE-OVA")
-    news_items = get_latest_news_simulation()
     for item in news_items:
-        analysis = analyze_news_with_llm(item, groq_client)
-        if analysis and analysis.get('is_relevant'):
+        analysis = analyze_news_with_llm(item, groq_client) # Prosleđujemo klijenta
+        if analysis:
             team = analysis.get('team')
-            impact = analysis.get('impact_score', 0)
+            impact = analysis.get('impact', 0)
             if team in power_scores:
-                print(f"   -> Relevantna vest za '{team}'. Impact: {impact}. Sažetak: {analysis.get('summary')}")
                 power_scores[team] += impact
-        time.sleep(1)
+    return power_scores
 
-    print("\n🏁 Finalni Power Score-ovi:")
-    print(json.dumps(power_scores, indent=2, sort_keys=True))
-
-    print_header("3. ALPHA GENERATOR - TRAŽENJE 'VALUE BET' ANOMALIJA")
-    found_any_value_bet = False
+# --- 5. "HERMES" PORTFOLIO MODUL ---
+def find_value_opportunities(config, live_matches, power_scores):
+    """Pronalazi sve opklade koje imaju pozitivan 'Value'."""
+    opportunities = []
     for match in live_matches:
         try:
-            home_team = match['home_team']
-            away_team = match['away_team']
-            
+            home_team, away_team = match['home_team'], match['away_team']
             home_score = power_scores.get(home_team, config["base_power_score"])
             away_score = power_scores.get(away_team, config["base_power_score"])
             draw_score = (home_score + away_score) / 2
             
-            exp_h = math.exp(home_score / 100)
-            exp_d = math.exp(draw_score / 100)
-            exp_a = math.exp(away_score / 100)
+            exp_h, exp_d, exp_a = math.exp(home_score/100), math.exp(draw_score/100), math.exp(away_score/100)
             total_exp = exp_h + exp_d + exp_a
-            
-            prob_home = exp_h / total_exp
-            prob_draw = exp_d / total_exp
-            prob_away = exp_a / total_exp
+            probs = {'1': exp_h/total_exp, 'X': exp_d/total_exp, '2': exp_a/total_exp}
             
             bookmaker = match['bookmakers'][0]
-            prices = bookmaker['markets'][0]['outcomes']
-            odds = {p['name']: p['price'] for p in prices}
-            odds_home = odds.get(home_team)
-            odds_away = odds.get(away_team)
-            odds_draw = odds.get('Draw')
+            prices = {p['name']: p['price'] for p in bookmaker['markets'][0]['outcomes']}
+            odds = {'1': prices.get(home_team), 'X': prices.get('Draw'), '2': prices.get(away_team)}
 
-            if not all([odds_home, odds_away, odds_draw]): continue
+            for outcome, outcome_name in [('1', home_team), ('X', 'Draw'), ('2', away_team)]:
+                if odds[outcome]:
+                    value = (probs[outcome] * odds[outcome]) - 1
+                    if value > config["value_threshold"]:
+                        opportunities.append({
+                            "match": f"{home_team} vs {away_team}",
+                            "outcome_key": outcome,
+                            "outcome_name": outcome_name,
+                            "our_prob": probs[outcome],
+                            "market_prob": 1 / odds[outcome],
+                            "odds": odds[outcome],
+                            "value": value
+                        })
+        except (IndexError, KeyError, TypeError):
+            continue
+    return opportunities
 
-            value_home = (prob_home * odds_home) - 1
-            value_draw = (prob_draw * odds_draw) - 1
-            value_away = (prob_away * odds_away) - 1
+def optimize_portfolio(opportunities):
+    """Markowitz-ova Optimizacija Portfolija."""
+    if not opportunities: return None, None
+    num_assets = len(opportunities)
+    returns = np.array([opp['value'] for opp in opportunities])
+    # Uprošćena pretpostavka: kovarijansa je nula između različitih mečeva
+    cov_matrix = np.diag([p * (1 - p) for p in [opp['our_prob'] for opp in opportunities]])
+    def objective(weights):
+        return - (np.sum(returns * weights) / np.sqrt(np.dot(weights.T, np.dot(cov_matrix, weights))))
+    constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+    bounds = tuple((0, 1) for _ in range(num_assets))
+    initial_weights = num_assets * [1. / num_assets,]
+    result = minimize(objective, initial_weights, method='SLSQP', bounds=bounds, constraints=constraints)
+    if result.success: return result.x, opportunities
+    return None, None
 
-            print(f"\nAnaliziram meč: {home_team} vs {away_team}")
-            print(f"  Naša P(1): {prob_home:.1%}, Kvota P(1): {1/odds_home:.1%} | Value: {value_home:.2f}")
-            print(f"  Naša P(X): {prob_draw:.1%}, Kvota P(X): {1/odds_draw:.1%} | Value: {value_draw:.2f}")
-            print(f"  Naša P(2): {prob_away:.1%}, Kvota P(2): {1/odds_away:.1%} | Value: {value_away:.2f}")
+def allocate_capital(config, optimal_weights, opportunities):
+    """Koristi Kelly Kriterijum da odredi ukupan ulog."""
+    if optimal_weights is None or not any(w > 0.001 for w in optimal_weights): return None
+    portfolio_value = sum(opp['value'] * w for opp, w in zip(opportunities, optimal_weights))
+    if portfolio_value <= 0: return None
+    # Računanje prosečne kvote portfolija je kompleksno, koristimo aproksimaciju
+    portfolio_odds_approx = 1 / sum((1/opp['odds']) * w for opp, w in zip(opportunities, optimal_weights) if w > 0.001)
+    if portfolio_odds_approx <= 1: return None
+    kelly_fraction = portfolio_value / (portfolio_odds_approx - 1)
+    final_fraction = min(kelly_fraction, config["max_kelly_fraction"])
+    return {
+        "total_stake_fraction": final_fraction,
+        "total_stake_amount": config["bankroll"] * final_fraction,
+        "individual_stakes": {opps['match'] + " - " + opps['outcome_name']: w * (config["bankroll"] * final_fraction) for w, opps in zip(optimal_weights, opportunities)}
+    }
 
-            if value_home > config["value_threshold"]:
-                found_any_value_bet = True
-                print(f"  ✅ VALUE BET ALERT! Preporuka: Ulog na {home_team} (Kvota: {odds_home})")
-            if value_draw > config["value_threshold"]:
-                found_any_value_bet = True
-                print(f"  ✅ VALUE BET ALERT! Preporuka: Ulog na Nerešeno (Kvota: {odds_draw})")
-            if value_away > config["value_threshold"]:
-                found_any_value_bet = True
-                print(f"  ✅ VALUE BET ALERT! Preporuka: Ulog na {away_team} (Kvota: {odds_away})")
+# --- 6. GLAVNI POKRETAČ ---
+def run_hermes_analysis():
+    config, groq_client = setup_clients_and_config()
+    print_header("1. Prikupljanje i Analiza Podataka")
+    live_matches = get_live_odds(config)
+    if not live_matches: return
+    
+    all_teams = {team for match in live_matches for team in [match['home_team'], match['away_team']]}
+    news_items = get_latest_news_simulation()
+    power_scores = calculate_power_scores(config, all_teams, news_items, groq_client)
+    print("\n🏁 Finalni Power Score-ovi:", {k:v for k,v in power_scores.items() if v != 100})
 
-        except (IndexError, KeyError, TypeError) as e:
-            print(f"INFO: Preskačem meč zbog nekompletnih podataka o kvotama. Greška: {e}")
+    print_header("2. Pronalaženje 'Value' Prilika")
+    opportunities = find_value_opportunities(config, live_matches, power_scores)
+    if not opportunities:
+        print("Nema pronađenih 'Value Bet' prilika.")
+        return
+    for opp in opportunities:
+        print(f"  - Pronađena prilika: {opp['match']} -> ishod '{opp['outcome_name']}' (Value: {opp['value']:.2f})")
 
-    if not found_any_value_bet:
-        print("\nNema detektovanih 'Value Bet' anomalija u ovom ciklusu.")
+    print_header("3. Optimizacija Portfolija (Markowitz)")
+    optimal_weights, opps = optimize_portfolio(opportunities)
+    if optimal_weights is None:
+        print("Optimizacija nije uspela.")
+        return
+    print("Optimalna raspodela uloga (težine):")
+    for w, opp in zip(optimal_weights, opps):
+        if w > 0.01:
+            print(f"  - {w*100:5.1f}% na: {opp['match']} - Ishod '{opp['outcome_name']}'")
 
-def print_header(title):
-    print("\n" + "═"*60)
-    print(f"  {title.upper()}")
-    print("═"*60)
+    print_header("4. Alokacija Kapitala (Kelly) i Finalna Preporuka")
+    stake_recommendation = allocate_capital(config, optimal_weights, opps)
+    if stake_recommendation:
+        print(f"PREPORUKA: Uložiti ukupno {stake_recommendation['total_stake_amount']:.2f} € ({stake_recommendation['total_stake_fraction']:.1%}) vašeg bankrolla od {config['bankroll']}€.")
+        print("Raspodela uloga:")
+        for bet_name, amount in stake_recommendation['individual_stakes'].items():
+            if amount > 0.1: # Prikazujemo samo uloge veće od 10 centi
+                print(f"  - {amount:.2f} € na: {bet_name}")
+    else:
+        print("Nema preporuke za ulaganje nakon optimizacije.")
 
-# --- GLAVNI POKRETAČ ---
 if __name__ == "__main__":
     try:
-        run_full_analysis()
+        run_hermes_analysis()
     except Exception as e:
         print(f"\nFATALNA GREŠKA: Došlo je do prekida izvršavanja skripte. Greška: {e}")
     finally:
