@@ -6,11 +6,14 @@ import math
 from groq import Groq
 
 # --- KONFIGURACIJA ---
+# API ključevi se učitavaju iz GitHub Secrets
 ODDS_API_KEY = os.environ.get('ODDS_API_KEY')
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
+
+# Hiperparametri sistema
 VALUE_THRESHOLD = 0.15  # Signal se generiše ako je naša prednost > 15%
 SPORT_KEY = 'soccer_epl' 
-MARKETS = 'h2h'
+MARKETS = 'h2h' # 1X2 kvote (pobeda domaćina, nerešeno, pobeda gosta)
 REGIONS = 'eu'
 BASE_POWER_SCORE = 100
 
@@ -19,19 +22,24 @@ groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 # --- MODUL 1: SAKUPLJAČ PODATAKA ---
 def get_live_odds():
+    """Povlači najnovije kvote sa The Odds API."""
     if not ODDS_API_KEY:
-        print("GREŠKA: ODDS_API_KEY nije postavljen.")
+        print("GREŠKA: ODDS_API_KEY nije postavljen. Ne mogu povući kvote.")
         return []
+    
     url = f"https://api.the-odds-api.com/v4/sports/{SPORT_KEY}/odds/?apiKey={ODDS_API_KEY}®ions={REGIONS}&markets={MARKETS}"
+    print(f"INFO: Povlačim podatke sa The Odds API...")
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
         response.raise_for_status()
+        print("INFO: Uspešno povučeni podaci sa The Odds API.")
         return response.json()
     except Exception as e:
         print(f"GREŠKA pri povlačenju kvota: {e}")
         return []
 
 def get_latest_news_simulation():
+    """U pravoj aplikaciji, ova funkcija bi koristila RSS. Ovde je simuliramo."""
     print("\n📰 Sakupljam najnovije vesti (simulacija)...")
     return [
         "Potvrđeno: Kapiten Man. Utd-a, Bruno Fernandes, propušta derbi zbog suspenzije.",
@@ -41,10 +49,12 @@ def get_latest_news_simulation():
 
 # --- MODUL 2: LLM ANALITIČAR ---
 def analyze_news_with_llm(news_text: str):
+    """Šalje vest LLM-u na analizu i vraća strukturirani JSON."""
     if not groq_client:
         print("UPOZORENJE: GROQ_API_KEY nije podešen. Preskačem LLM analizu.")
         return None
-    system_prompt = "Ti si sportski analitičar. Pročitaj vest i prevedi je u JSON sa poljima: 'is_relevant' (boolean), 'team' (string), 'summary' (string), 'impact_score' (integer od -25 do +25)."
+    system_prompt = "Ti si sportski analitičar. Pročitaj vest i prevedi je u JSON. Fokusiraj se na informacije koje utiču na snagu tima. JSON struktura: 'is_relevant' (boolean), 'team' (string), 'summary' (string), 'impact_score' (integer od -25 do +25)."
+    
     print(f"🤖 Šaljem LLM-u na analizu: '{news_text[:60]}...'")
     try:
         response = groq_client.chat.completions.create(
@@ -79,10 +89,10 @@ def run_full_analysis():
             if team in power_scores:
                 print(f"   -> Relevantna vest za {team}. Impact: {impact}. Sažetak: {analysis.get('summary')}")
                 power_scores[team] += impact
-        time.sleep(1)
+        time.sleep(1) 
 
     print("\n🏁 Finalni Power Score-ovi:")
-    print(json.dumps(power_scores, indent=2))
+    print(json.dumps(power_scores, indent=2, sort_keys=True))
 
     print_header("3. Alpha Generator - Traženje 'Value Bet' Anomalija")
     found_any_value_bet = False
@@ -92,35 +102,49 @@ def run_full_analysis():
         
         home_score = power_scores.get(home_team, BASE_POWER_SCORE)
         away_score = power_scores.get(away_team, BASE_POWER_SCORE)
+        draw_score = (home_score + away_score) / 2 # Nerešeno je verovatnije ako su timovi blizu
         
-        # Softmax za verovatnoće (samo sa dva ishoda za jednostavnost)
-        total_score = home_score + away_score
-        prob_home = home_score / total_score
-        prob_away = away_score / total_score
+        # Softmax za verovatnoće za 3 ishoda
+        exp_h = math.exp(home_score / 100)
+        exp_d = math.exp(draw_score / 100)
+        exp_a = math.exp(away_score / 100)
+        total_exp = exp_h + exp_d + exp_a
+        
+        prob_home = exp_h / total_exp
+        prob_draw = exp_d / total_exp
+        prob_away = exp_a / total_exp
         
         # Uzmi kvote
         try:
             bookmaker = match['bookmakers'][0]
             prices = bookmaker['markets'][0]['outcomes']
-            odds_home = next((p['price'] for p in prices if p['name'] == home_team), None)
-            odds_away = next((p['price'] for p in prices if p['name'] == away_team), None)
+            odds = {p['name']: p['price'] for p in prices}
+            odds_home = odds.get(home_team)
+            odds_away = odds.get(away_team)
+            odds_draw = odds.get('Draw')
         except (IndexError, KeyError):
-            continue # Preskoči meč ako nema kvota
+            continue
 
-        if not odds_home or not odds_away: continue
+        if not all([odds_home, odds_away, odds_draw]): continue
 
         # Provera "Value"
         value_home = (prob_home * odds_home) - 1
+        value_draw = (prob_draw * odds_draw) - 1
         value_away = (prob_away * odds_away) - 1
 
         print(f"\nAnaliziram meč: {home_team} vs {away_team}")
         print(f"  Naša P(1): {prob_home:.1%}, Kvota P(1): {1/odds_home:.1%} | Value: {value_home:.2f}")
+        print(f"  Naša P(X): {prob_draw:.1%}, Kvota P(X): {1/odds_draw:.1%} | Value: {value_draw:.2f}")
         print(f"  Naša P(2): {prob_away:.1%}, Kvota P(2): {1/odds_away:.1%} | Value: {value_away:.2f}")
 
         if value_home > VALUE_THRESHOLD:
             found_any_value_bet = True
             print(f"  ✅ VALUE BET ALERT! Preporuka: Ulog na {home_team} (Kvota: {odds_home})")
         
+        if value_draw > VALUE_THRESHOLD:
+            found_any_value_bet = True
+            print(f"  ✅ VALUE BET ALERT! Preporuka: Ulog na Nerešeno (Kvota: {odds_draw})")
+
         if value_away > VALUE_THRESHOLD:
             found_any_value_bet = True
             print(f"  ✅ VALUE BET ALERT! Preporuka: Ulog na {away_team} (Kvota: {odds_away})")
