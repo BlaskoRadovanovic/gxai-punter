@@ -2,6 +2,7 @@ import os
 import requests
 import json
 import time
+import math
 from groq import Groq
 
 # --- KONFIGURACIJA ---
@@ -10,11 +11,10 @@ ODDS_API_KEY = os.environ.get('ODDS_API_KEY')
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
 
 # Hiperparametri sistema
-VALUE_THRESHOLD = 0.15
-# Promenjena imena promenljivih da se izbegne greška
-TARGET_SPORT = 'soccer_epl'
-TARGET_MARKETS = 'h2h'
-TARGET_REGIONS = 'eu' # Eksplicitno napisan string
+VALUE_THRESHOLD = 0.15  # Signal se generiše ako je naša prednost > 15%
+SPORT_KEY = 'soccer_epl' 
+MARKETS = 'h2h' # 1X2 kvote (pobeda domaćina, nerešeno, pobeda gosta)
+REGIONS = 'eu'
 BASE_POWER_SCORE = 100
 
 # --- INICIJALIZACIJA KLIJENATA ---
@@ -22,23 +22,15 @@ groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 # --- MODUL 1: SAKUPLJAČ PODATAKA ---
 def get_live_odds():
+    """Povlači najnovije kvote sa The Odds API."""
     if not ODDS_API_KEY:
-        print("GREŠKA: ODDS_API_KEY nije postavljen.")
+        print("GREŠKA: ODDS_API_KEY nije postavljen. Ne mogu povući kvote.")
         return []
     
-    # Pažljivo konstruisan URL sa novim imenima promenljivih
-    # Ovo je najvažnija ispravka
-    url = f"https://api.the-odds-api.com/v4/sports/{TARGET_SPORT}/odds/"
-    api_params = {
-        'apiKey': ODDS_API_KEY,
-        'regions': TARGET_REGIONS,
-        'markets': TARGET_MARKETS
-    }
-    
+    url = f"https://api.the-odds-api.com/v4/sports/{SPORT_KEY}/odds/?apiKey={ODDS_API_KEY}regions={REGIONS}&markets={MARKETS}"
     print(f"INFO: Povlačim podatke sa The Odds API...")
-    
     try:
-        response = requests.get(url, params=api_params)
+        response = requests.get(url, timeout=10)
         response.raise_for_status()
         print("INFO: Uspešno povučeni podaci sa The Odds API.")
         return response.json()
@@ -46,10 +38,8 @@ def get_live_odds():
         print(f"GREŠKA pri povlačenju kvota: {e}")
         return []
 
-# Ostatak koda ostaje isti kao u našoj Sesiji 3
-# ... (sve funkcije od get_latest_news_simulation do kraja) ...
-
 def get_latest_news_simulation():
+    """U pravoj aplikaciji, ova funkcija bi koristila RSS. Ovde je simuliramo."""
     print("\n📰 Sakupljam najnovije vesti (simulacija)...")
     return [
         "Potvrđeno: Kapiten Man. Utd-a, Bruno Fernandes, propušta derbi zbog suspenzije.",
@@ -57,11 +47,14 @@ def get_latest_news_simulation():
         "Procurila je informacija o žestokoj svađi između dva starija igrača Liverpoola u svlačionici."
     ]
 
+# --- MODUL 2: LLM ANALITIČAR ---
 def analyze_news_with_llm(news_text: str):
+    """Šalje vest LLM-u na analizu i vraća strukturirani JSON."""
     if not groq_client:
         print("UPOZORENJE: GROQ_API_KEY nije podešen. Preskačem LLM analizu.")
         return None
     system_prompt = "Ti si sportski analitičar. Pročitaj vest i prevedi je u JSON. Fokusiraj se na informacije koje utiču na snagu tima. JSON struktura: 'is_relevant' (boolean), 'team' (string), 'summary' (string), 'impact_score' (integer od -25 do +25)."
+    
     print(f"🤖 Šaljem LLM-u na analizu: '{news_text[:60]}...'")
     try:
         response = groq_client.chat.completions.create(
@@ -74,6 +67,7 @@ def analyze_news_with_llm(news_text: str):
         print(f"GREŠKA pri komunikaciji sa Groq API-jem: {e}")
         return None
 
+# --- MODUL 3: GLAVNI GXAI MOTOR I ALPHA GENERATOR ---
 def run_full_analysis():
     print_header("1. Inicijalizacija i Sakupljanje Podataka")
     live_matches = get_live_odds()
@@ -108,8 +102,9 @@ def run_full_analysis():
         
         home_score = power_scores.get(home_team, BASE_POWER_SCORE)
         away_score = power_scores.get(away_team, BASE_POWER_SCORE)
-        draw_score = (home_score + away_score) / 2
+        draw_score = (home_score + away_score) / 2 # Nerešeno je verovatnije ako su timovi blizu
         
+        # Softmax za verovatnoće za 3 ishoda
         exp_h = math.exp(home_score / 100)
         exp_d = math.exp(draw_score / 100)
         exp_a = math.exp(away_score / 100)
@@ -119,6 +114,7 @@ def run_full_analysis():
         prob_draw = exp_d / total_exp
         prob_away = exp_a / total_exp
         
+        # Uzmi kvote
         try:
             bookmaker = match['bookmakers'][0]
             prices = bookmaker['markets'][0]['outcomes']
@@ -131,6 +127,7 @@ def run_full_analysis():
 
         if not all([odds_home, odds_away, odds_draw]): continue
 
+        # Provera "Value"
         value_home = (prob_home * odds_home) - 1
         value_draw = (prob_draw * odds_draw) - 1
         value_away = (prob_away * odds_away) - 1
@@ -160,6 +157,7 @@ def print_header(title):
     print(f"  {title.upper()}")
     print("═"*60)
 
+# --- POKRETANJE ---
 if __name__ == "__main__":
     run_full_analysis()
     print_header("Analiza završena")
