@@ -14,7 +14,7 @@ def get_live_odds():
     markets = 'h2h' # 1X2 kvote
     regions = 'eu'
 
-    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?apiKey={api_key}®ions={regions}&markets={markets}"
+    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/?apiKey={api_key}ions={regions}&markets={markets}"
 
     print(f"Povlačim podatke sa: {url.replace(api_key, '***')}")
 
